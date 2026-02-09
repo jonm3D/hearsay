@@ -13,6 +13,7 @@ dependencies = [
     "pymupdf>=1.24",
     "anthropic>=0.40",
     "elevenlabs>=1.0",
+    "mutagen>=1.47",  # MP3 metadata/ID3 tags
 ]
 
 [project.optional-dependencies]

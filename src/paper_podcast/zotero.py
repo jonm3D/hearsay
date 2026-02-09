@@ -173,6 +173,52 @@ def _find_pdf_for_item(conn: sqlite3.Connection, item_id: int, storage_dir: Path
     return None
 
 
+def search_papers(query: str, zotero_dir: Path | None = None) -> list[Paper]:
+    """Search for papers by title across the entire library.
+
+    Args:
+        query: Search string to match against titles (case-insensitive).
+        zotero_dir: Path to Zotero data directory. Uses default if not specified.
+
+    Returns:
+        List of Paper objects matching the query.
+    """
+    db_path = get_db_path(zotero_dir)
+    storage_dir = get_storage_dir(zotero_dir)
+
+    if not db_path.exists():
+        raise FileNotFoundError(f"Zotero database not found at {db_path}")
+
+    conn = sqlite3.connect(f"file:{db_path}?immutable=1", uri=True)
+    try:
+        # Search all items by title
+        # fieldID 1 = 'title' field
+        sql = """
+            SELECT DISTINCT i.itemID, idv.value as title
+            FROM items i
+            LEFT JOIN itemData id ON i.itemID = id.itemID AND id.fieldID = 1
+            LEFT JOIN itemDataValues idv ON id.valueID = idv.valueID
+            WHERE i.itemTypeID != 2
+              AND idv.value LIKE ?
+            ORDER BY title
+        """
+        cursor = conn.execute(sql, (f"%{query}%",))
+        items = cursor.fetchall()
+
+        papers = []
+        for item_id, title in items:
+            pdf_path = _find_pdf_for_item(conn, item_id, storage_dir)
+            papers.append(Paper(
+                item_id=item_id,
+                title=title or "(No title)",
+                pdf_path=pdf_path
+            ))
+
+        return papers
+    finally:
+        conn.close()
+
+
 # Quick test when run directly
 if __name__ == "__main__":
     print("Zotero data directory:", get_zotero_dir())
