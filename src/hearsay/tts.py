@@ -3,6 +3,7 @@
 import os
 import re
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -34,16 +35,8 @@ def _get_pipeline():
     return _pipeline
 
 
-def generate_script(paper_markdown: str, title: str) -> str:
-    """Generate a single-narrator audio summary for PhD qual prep.
-
-    Args:
-        paper_markdown: The cleaned paper markdown.
-        title: Paper title.
-
-    Returns:
-        Plain narration text (no dialogue labels).
-    """
+def _get_client():
+    """Get an Anthropic client."""
     import anthropic
     from dotenv import load_dotenv
 
@@ -52,10 +45,12 @@ def generate_script(paper_markdown: str, title: str) -> str:
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         raise ValueError("ANTHROPIC_API_KEY not set")
+    return anthropic.Anthropic(api_key=api_key)
 
-    client = anthropic.Anthropic(api_key=api_key)
 
-    prompt = f"""Create a single-narrator audio summary of this academic paper. This is for PhD qualifying exam preparation — meant to be listened to, not read.
+def _build_script_prompt(paper_markdown: str, title: str) -> str:
+    """Build the prompt for generating a narration script."""
+    return f"""Create a single-narrator audio summary of this academic paper. This is for PhD qualifying exam preparation — meant to be listened to, not read.
 
 FORMAT:
 - Single narrator speaking directly to the listener ("you")
@@ -106,9 +101,23 @@ Paper content:
 
 Generate the full narrated summary:"""
 
+
+def generate_script(paper_markdown: str, title: str) -> str:
+    """Generate a single-narrator audio summary for PhD qual prep.
+
+    Args:
+        paper_markdown: The cleaned paper markdown.
+        title: Paper title.
+
+    Returns:
+        Plain narration text (no dialogue labels).
+    """
+    client = _get_client()
+    prompt = _build_script_prompt(paper_markdown, title)
+
     print("  Calling Claude API for script generation...")
     message = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-opus-4-20250514",
         max_tokens=8000,
         messages=[{"role": "user", "content": prompt}]
     )
@@ -155,7 +164,7 @@ def _synthesize_segment(pipeline, text: str, voice: str) -> np.ndarray:
     Kokoro's pipeline yields chunks; we concatenate them into one array.
     """
     chunks = []
-    for _graphemes, _phonemes, audio in pipeline(text, voice=voice, speed=1.0):
+    for _graphemes, _phonemes, audio in pipeline(text, voice=voice, speed=1.2):
         chunks.append(audio)
 
     if not chunks:
@@ -249,7 +258,10 @@ def create_podcast(
     output_dir: Path,
     voice: str = DEFAULT_VOICE,
 ) -> dict:
-    """Full pipeline: generate script and audio from paper markdown.
+    """Full pipeline: stream script from Claude while synthesizing audio.
+
+    Streams the Claude response paragraph-by-paragraph and feeds completed
+    paragraphs to a TTS worker thread, so generation and synthesis overlap.
 
     Args:
         paper_markdown: Cleaned paper markdown.
@@ -263,21 +275,99 @@ def create_podcast(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Generate script
-    print("\n[1/2] Generating narration script...")
-    script = generate_script(paper_markdown, title)
+    # Pre-load TTS model so it's ready when first paragraph arrives
+    pipeline = _get_pipeline()
+
+    client = _get_client()
+    prompt = _build_script_prompt(paper_markdown, title)
+
+    print("\nStreaming script + synthesizing audio...")
+
+    # Single TTS worker: synthesizes paragraphs in order while Claude streams
+    executor = ThreadPoolExecutor(max_workers=1)
+    tts_futures = []
+    script_parts = []
+    buffer = ""
+    para_idx = 0
+
+    def _submit_paragraph(text: str):
+        nonlocal para_idx
+        para_idx += 1
+        preview = text[:60] + "..." if len(text) > 60 else text
+        print(f"  [paragraph {para_idx}] {preview}")
+        script_parts.append(text)
+        future = executor.submit(_synthesize_segment, pipeline, text, voice)
+        tts_futures.append(future)
+
+    with client.messages.stream(
+        model="claude-opus-4-20250514",
+        max_tokens=8000,
+        messages=[{"role": "user", "content": prompt}],
+    ) as stream:
+        for chunk in stream.text_stream:
+            buffer += chunk
+            # Emit complete paragraphs as they arrive
+            while "\n\n" in buffer:
+                paragraph, buffer = buffer.split("\n\n", 1)
+                paragraph = paragraph.strip()
+                if paragraph:
+                    _submit_paragraph(paragraph)
+
+    # Flush remaining buffer
+    if buffer.strip():
+        _submit_paragraph(buffer.strip())
+
+    print(f"  Script complete: {para_idx} paragraphs")
+
+    # Save script
+    script = "\n\n".join(script_parts)
     script_path = output_dir / "script.txt"
     script_path.write_text(script)
-    print(f"  Script: {len(script):,} characters")
-    print(f"  Saved to: {script_path}")
 
-    # Generate audio
-    print("\n[2/2] Generating audio...")
+    # Collect audio segments in order (blocks until each future completes)
+    pause = np.zeros(int(SAMPLE_RATE * 0.4), dtype=np.float32)
+    audio_segments = []
+    for i, future in enumerate(tts_futures):
+        segment = future.result()
+        if segment.size > 0:
+            audio_segments.append(segment)
+            audio_segments.append(pause)
+        print(f"  [audio {i + 1}/{len(tts_futures)}] done")
+
+    executor.shutdown(wait=False)
+
+    if not audio_segments:
+        raise ValueError("No audio was generated")
+
+    # Combine and export
+    print("  Combining audio...")
+    combined = np.concatenate(audio_segments)
+    duration_min = len(combined) / SAMPLE_RATE / 60
+    print(f"  Total duration: {duration_min:.1f} minutes")
+
     safe_title = re.sub(r'[^\w\s-]', '', title)
     safe_title = re.sub(r'\s+', '_', safe_title)[:60]
     audio_path = output_dir / f"{safe_title}.mp3"
+    audio_path.parent.mkdir(parents=True, exist_ok=True)
 
-    audio_path = generate_audio(script, audio_path, title=title, voice=voice)
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        tmp_wav = Path(tmp.name)
+
+    try:
+        sf.write(str(tmp_wav), combined, SAMPLE_RATE)
+        audio_seg = AudioSegment.from_wav(str(tmp_wav))
+        audio_seg.export(str(audio_path), format="mp3", bitrate="192k")
+    finally:
+        tmp_wav.unlink(missing_ok=True)
+
+    # Metadata
+    set_mp3_metadata(
+        audio_path,
+        title=title,
+        artist="Hearsay",
+        album="PhD Qual Prep",
+        comment=f"Generated {datetime.now().strftime('%Y-%m-%d')} with Kokoro TTS",
+    )
 
     size_mb = audio_path.stat().st_size / 1024 / 1024
     print(f"\n  Complete! {audio_path.name} ({size_mb:.1f} MB)")

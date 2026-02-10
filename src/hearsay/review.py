@@ -68,7 +68,7 @@ Reply with ONLY one word: "figure" or "artifact"
 {f"Paper topic: {paper_context}" if paper_context else ""}"""
 
     message = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-haiku-4-5-20251001",
         max_tokens=10,
         messages=[
             {
@@ -139,25 +139,36 @@ Keep the description clear and suitable for a podcast listener who cannot see th
     return message.content[0].text
 
 
-def clean_paper_text(raw_text: str, title: str | None = None) -> str:
-    """Use Claude to clean raw PDF text into readable markdown.
+def _chunk_text(text: str, max_chars: int = 12000) -> list[str]:
+    """Split text into chunks at paragraph boundaries."""
+    paragraphs = text.split("\n\n")
+    chunks = []
+    current = []
+    current_len = 0
 
-    Args:
-        raw_text: Raw text extracted from PDF (may have artifacts).
-        title: Optional paper title for context.
+    for para in paragraphs:
+        if current_len + len(para) > max_chars and current:
+            chunks.append("\n\n".join(current))
+            current = [para]
+            current_len = len(para)
+        else:
+            current.append(para)
+            current_len += len(para)
 
-    Returns:
-        Clean markdown text of just the paper content.
-    """
-    client = get_client()
+    if current:
+        chunks.append("\n\n".join(current))
+    return chunks
 
-    prompt = f"""Extract and clean the academic paper text below. Return ONLY the paper content as clean, readable markdown.
+
+def _clean_chunk(client, chunk: str, chunk_num: int, total_chunks: int,
+                 title: str | None = None) -> str:
+    """Clean a single chunk of raw PDF text."""
+    position = f"Part {chunk_num}/{total_chunks}. "
+    prompt = f"""Clean this section of raw PDF text into readable markdown. {position}Return ONLY the cleaned content.
 
 Instructions:
-- Remove all repository metadata (HAL, JSTOR, arXiv headers/footers)
-- Remove download notices, copyright footers, page numbers
+- Remove repository metadata, download notices, copyright footers, page numbers
 - Remove journal formatting artifacts (column breaks, page headers)
-- Keep the paper structure: title, authors, abstract, sections, references
 - Fix broken words/sentences from PDF column layouts
 - Use proper markdown: ## for section headings, paragraphs separated by blank lines
 - Keep all academic content, citations, equations, figure/table references
@@ -166,15 +177,42 @@ Instructions:
 {"Title: " + title if title else ""}
 
 Raw PDF text:
-{raw_text}"""
+{chunk}"""
 
     message = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=16000,
+        model="claude-haiku-4-5-20251001",
+        max_tokens=8000,
         messages=[{"role": "user", "content": prompt}]
     )
-
     return message.content[0].text
+
+
+def clean_paper_text(raw_text: str, title: str | None = None) -> str:
+    """Clean raw PDF text into readable markdown using parallel Haiku calls.
+
+    Chunks the text and cleans each chunk concurrently for speed.
+
+    Args:
+        raw_text: Raw text extracted from PDF (may have artifacts).
+        title: Optional paper title for context.
+
+    Returns:
+        Clean markdown text of just the paper content.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    client = get_client()
+    chunks = _chunk_text(raw_text)
+    print(f"    Cleaning {len(chunks)} chunks in parallel...")
+
+    with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
+        futures = [
+            executor.submit(_clean_chunk, client, chunk, i + 1, len(chunks), title)
+            for i, chunk in enumerate(chunks)
+        ]
+        results = [f.result() for f in futures]
+
+    return "\n\n".join(results)
 
 
 def process_paper(
@@ -221,57 +259,78 @@ def process_paper(
         "figure_descriptions": {},
     }
 
-    # Extract raw text
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    # Extract raw text and figures (both fast, local)
     print(f"  Extracting text...")
     raw_text = extract_text_raw(pdf_path)
 
-    # Extract figures if requested
     figure_paths = []
+    all_images = []
     if extract_figures:
         print(f"  Extracting figures...")
         all_images = pdf_extract_figures(pdf_path, img_dir)
-        print(f"  Found {len(all_images)} images, filtering artifacts...")
+        print(f"  Found {len(all_images)} images")
 
-        # Filter out ads and artifacts
-        for img_path in all_images:
-            try:
-                if is_paper_figure(img_path, title):
+    # Run text cleaning and figure processing in parallel
+    # Text cleaning is the bottleneck — start it ASAP alongside figure API calls
+    print(f"  Running text cleaning + figure processing in parallel...")
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        # Submit text cleaning (internally parallelized into chunks)
+        text_future = pool.submit(clean_paper_text, raw_text, title)
+
+        # Submit all figure filter calls in parallel
+        if all_images:
+            filter_futures = {
+                pool.submit(is_paper_figure, img, title): img
+                for img in all_images
+            }
+
+            for future in as_completed(filter_futures):
+                img_path = filter_futures[future]
+                try:
+                    if future.result():
+                        figure_paths.append(img_path)
+                    else:
+                        print(f"    Filtered out artifact: {img_path.name}")
+                        img_path.unlink()
+                except Exception as e:
+                    print(f"    Warning: Could not classify {img_path.name}: {e}")
                     figure_paths.append(img_path)
-                else:
-                    print(f"    Filtered out artifact: {img_path.name}")
-                    img_path.unlink()  # Delete the artifact
-            except Exception as e:
-                print(f"    Warning: Could not classify {img_path.name}: {e}")
-                figure_paths.append(img_path)  # Keep if unsure
 
-        # Rename remaining figures sequentially
-        final_paths = []
-        for i, fig_path in enumerate(figure_paths, 1):
-            new_name = f"figure_{i}{fig_path.suffix}"
-            new_path = fig_path.parent / new_name
-            if fig_path != new_path:
-                fig_path.rename(new_path)
-            final_paths.append(new_path)
-        figure_paths = final_paths
+            # Sort by original order and rename sequentially
+            figure_paths.sort(key=lambda p: all_images.index(p))
+            final_paths = []
+            for i, fig_path in enumerate(figure_paths, 1):
+                new_name = f"figure_{i}{fig_path.suffix}"
+                new_path = fig_path.parent / new_name
+                if fig_path != new_path:
+                    fig_path.rename(new_path)
+                final_paths.append(new_path)
+            figure_paths = final_paths
+            result["figures"] = figure_paths
+            print(f"  Kept {len(figure_paths)} figures")
 
-        result["figures"] = figure_paths
-        print(f"  Kept {len(figure_paths)} figures")
+        # Submit figure descriptions in parallel (after filtering)
+        if describe_figures and figure_paths:
+            print(f"  Describing {len(figure_paths)} figures in parallel...")
+            desc_futures = {
+                pool.submit(describe_figure, fig_path, i, title): (i, fig_path)
+                for i, fig_path in enumerate(figure_paths, 1)
+            }
+            for future in as_completed(desc_futures):
+                i, fig_path = desc_futures[future]
+                try:
+                    result["figure_descriptions"][f"figure_{i}"] = future.result()
+                    print(f"    Figure {i} described")
+                except Exception as e:
+                    print(f"    Warning: Could not describe figure {i}: {e}")
+                    result["figure_descriptions"][f"figure_{i}"] = f"[Figure {i}]"
 
-    # Describe figures with vision if requested
-    if describe_figures and figure_paths:
-        print(f"  Describing figures with AI...")
-        for i, fig_path in enumerate(figure_paths, 1):
-            print(f"    Figure {i}/{len(figure_paths)}...")
-            try:
-                description = describe_figure(fig_path, i, title)
-                result["figure_descriptions"][f"figure_{i}"] = description
-            except Exception as e:
-                print(f"    Warning: Could not describe figure {i}: {e}")
-                result["figure_descriptions"][f"figure_{i}"] = f"[Figure {i}]"
-
-    # Clean text with Claude
-    print(f"  Cleaning text with AI...")
-    clean_text = clean_paper_text(raw_text, title)
+        # Wait for text cleaning to finish
+        clean_text = text_future.result()
+        print(f"  Text cleaning done ({len(clean_text):,} chars)")
 
     # Insert figure descriptions into the markdown
     if result["figure_descriptions"]:

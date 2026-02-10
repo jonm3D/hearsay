@@ -23,6 +23,27 @@ Hearsay extracts text and figures from PDFs in your Zotero library, uses Claude 
   - Likely committee questions with suggested approaches
 - **MP3 Output**: Generates audio files with proper ID3 metadata for music players
 
+## Example
+
+Here's output from running `hearsay --search "State of the World"` on [Luijendijk et al. (2018) — *The State of the World's Beaches*](https://doi.org/10.1038/s41598-018-24630-6):
+
+**[Download the example MP3](examples/the_state_of_the_worlds_beaches/The_State_of_the_Worlds_Beaches.mp3)** (9.5 min, 11 MB)
+
+> *Alright, let's dive into "The State of the World's Beaches" by Luijendijk and colleagues. This paper presents the first truly global assessment of sandy beach occurrence and shoreline change rates using satellite imagery from 1984 to 2016...*
+
+The full pipeline produces a paper directory with cleaned markdown, extracted figures, the narration script, and the MP3:
+
+```
+output/the_state_of_the_worlds_beaches/
+├── paper.md                              # Cleaned markdown
+├── script.txt                            # Narration script
+├── The_State_of_the_Worlds_Beaches.mp3   # Audio (9.5 min)
+└── img/
+    ├── figure_1.png
+    ├── figure_2.png
+    └── ...
+```
+
 ## Installation
 
 ```bash
@@ -56,19 +77,24 @@ ZOTERO_DATA_DIR=/path/to/Zotero
 ### Command Line
 
 ```bash
-# Process a paper from a specific collection
+# Browse papers in a Zotero collection
 hearsay --collection "Qualifying Exam"
 
 # Search across your entire library
 hearsay --search "coastal erosion"
 
-# Specify output directory
+# Interactive mode — pick a collection, then a paper
+hearsay
+
+# Script only (skip TTS)
+hearsay --search "beaches" --no-audio
+
+# Skip figure extraction
+hearsay --collection "Papers" --no-figures
+
+# Custom output directory
 hearsay --collection "Papers" --output-dir ./podcasts
 ```
-
-### Interactive Selection
-
-When you run the command, you'll be presented with papers in the collection and can select which one to process.
 
 ### Python API
 
@@ -99,8 +125,12 @@ result = create_podcast(markdown, title, output_dir)
 ```
 output/
 └── paper_title/
+    ├── paper.md              # Cleaned markdown with figure descriptions
     ├── script.txt            # Generated narration script
-    └── Paper_Title.mp3       # Audio file with ID3 metadata
+    ├── Paper_Title.mp3       # Audio file with ID3 metadata
+    └── img/
+        ├── figure_1.png      # Extracted & filtered figures
+        └── ...
 ```
 
 The MP3 includes metadata:
@@ -141,13 +171,11 @@ hearsay/
    - Describe figures using vision capabilities
    - Filter out advertisements and artifacts
 
-4. **Script Generation**: Claude generates a ~10 minute single-narrator summary with:
+4. **Streaming Script + Audio**: Claude generates a ~10 minute single-narrator summary while Kokoro TTS synthesizes audio in parallel:
+   - Script streams paragraph-by-paragraph from the API
+   - Each completed paragraph is immediately queued for TTS synthesis
    - Part 1: Faithful walkthrough of the paper
    - Part 2: Critical analysis and committee prep
-
-5. **Audio Synthesis**: Kokoro TTS converts the script to audio locally (no API key needed):
-   - Single narrator voice ("af_heart")
-   - Paragraphs synthesized with natural pauses and exported as MP3
 
 ## Dependencies
 

@@ -1,0 +1,63 @@
+Alright, let's dive into "The State of the World's Beaches" by Luijendijk and colleagues. This paper presents the first truly global assessment of sandy beach occurrence and shoreline change rates using satellite imagery from 1984 to 2016.
+
+## Part 1: Paper Walkthrough
+
+The authors start with a critical observation. Despite coastal zones being some of the most populated areas on Earth, with 15 of 20 megacities located coastally, we've never had a reliable global assessment of shoreline change. Previous estimates varied wildly. For instance, estimates of how much of the world's coast is sandy ranged from 10 percent to 75 percent. That's a factor of seven difference. Similarly, Bird's 1985 estimate that 70 percent of sandy beaches were eroding was based on interviews, not measurements.
+
+This paper changes that by leveraging Google Earth Engine and 33 years of Landsat imagery. Let me walk you through their methods carefully, as this is where your remote sensing expertise connects directly.
+
+First, they established a global transect system. They created transects every 500 meters perpendicular to the OpenStreetMap shoreline from 2016. This gave them about 2 million transects covering 1.11 million kilometers of ice-free shoreline globally.
+
+For detecting sandy beaches, they used Sentinel-2 imagery from 2016. The key here is they applied supervised classification using the CART algorithm, training it on known sandy beaches in the Netherlands. They achieved 97 percent accuracy in their validation. An important detail for your committee: they couldn't distinguish between sand and gravel beaches spectrally, so "sandy beaches" in this paper includes both.
+
+Now, here's where it gets technically interesting. For shoreline detection, they didn't just grab individual images. They created annual composites using the 15th percentile of reflectance values. This is clever - it removes clouds and reduces the influence of tides and waves. They then applied the Normalized Difference Water Index, or NDWI, followed by Canny edge detection and Otsu thresholding to identify the land-water boundary.
+
+Let's slow down here because this matters for your work. The Otsu method automatically finds the optimal threshold to separate water from land in the NDWI values. They then smoothed the resulting shorelines using a 1D Gaussian filter with a window of 3 pixels on each side to avoid that staircase effect you get from pixel boundaries.
+
+Their validation is solid. They tested against ground truth data from Hatteras Island, North Carolina, using aerial photography-derived shorelines from 1989 to 2002. The mean offset was just 2 meters with an RMSE of 17 meters. Across all validation sites, they achieved an average offset of 2.3 meters with an RMSE of 21 meters.
+
+Moving on to their findings. They determined that 31 percent of the world's ice-free shoreline is sandy. Africa has the highest percentage at 66 percent, while Europe has the lowest at 22 percent. There's a clear latitudinal pattern - sandy beaches peak around 20 to 40 degrees latitude in both hemispheres, corresponding to the horse latitudes. They're less common in the humid tropics where mangroves dominate, and decrease beyond 50 degrees latitude.
+
+For shoreline change rates, they classified beaches into six categories based on meters per year of change. Stable beaches fall between minus 0.5 and plus 0.5 meters per year. Anything losing more than 0.5 meters per year is erosion, with subcategories for intense, severe, and extreme erosion.
+
+The global results are striking. 24 percent of sandy beaches are eroding at rates exceeding 0.5 meters per year. 28 percent are accreting, and 48 percent are stable. About 16 percent are experiencing intense erosion, losing more than 1 meter per year. On the extreme end, 4 percent of sandy beaches are losing more than 5 meters per year.
+
+Continentally, only Australia and Africa show net erosion at minus 0.20 and minus 0.07 meters per year respectively. Asia shows the highest accretion at 1.27 meters per year, which they attribute to artificial development and land reclamation in places like Singapore and Dubai.
+
+This next part is important. When they examined marine protected areas, they found 37 percent of sandy beaches within them are eroding. That's significantly higher than the global average of 24 percent.
+
+The paper includes several case studies that illustrate human impacts. In the Mekong Delta, excessive sand mining and groundwater-induced subsidence are causing erosion rates of 25 to 30 meters per year. At Nouakchott, Mauritania, harbor structures blocking longshore transport caused erosion rates of 20 meters per year downdrift. Conversely, sand bypassing systems at Tweed River, Australia, and beach nourishment in the Netherlands show accretion rates of 10 meters per year or more.
+
+They identify global hot spots of change. The worst erosion is near Freeport, Texas - a 17-kilometer stretch losing an average of 15.2 meters per year. The largest accretion hot spot is in Namibia, where diamond mining operations created artificial sand bunds, though natural accretion hot spots exist at migrating barrier islands and where dunes migrate seaward.
+
+## Part 2: Critical Analysis and Committee Prep
+
+Alright, now that we've covered what the paper says, let's talk about what a committee would push on.
+
+First, methodological scrutiny. The biggest assumption is that the 15th percentile composite truly represents mean shoreline position. They claim this removes tidal effects, but they don't quantify residual tidal bias in macro-tidal environments. A USACE coastal engineer would immediately ask about this. The paper admits they can't separate wave setup and runup effects, which could systematically bias shorelines seaward in high-energy environments.
+
+Another critical assumption is that linear regression adequately captures shoreline change over 33 years. They acknowledge that 40 percent of transects show uncertainty bands exceeding 50 percent of the trend. This suggests non-linear behavior that their method doesn't capture. Think about how storm clusters or decadal climate oscillations might create step changes that violate the linear assumption.
+
+The paper doesn't address a major limitation - they can't detect shoreline change where beaches have completely disappeared. If erosion removes the beach entirely, converting to rocky shore or armored coast, their method misses this. This creates survivorship bias in their global statistics.
+
+For connections to your work, several things stand out. Their shoreline detection method using NDWI and Otsu thresholding could directly inform your topobathymetric work on the Texas coast. However, their annual compositing approach wouldn't capture the seasonal and storm-driven changes you're investigating.
+
+Your ArcticDEM work on bluff retreat faces different challenges than their sandy beach focus. They explicitly exclude areas above 60 degrees north, right where your Arctic work sits. The spectral signatures and geomorphology are fundamentally different - you're dealing with permafrost and thermodenudation, not sandy beach dynamics.
+
+For your Duck work on bathymetric fusion, their limitation stands out - they only capture the shoreline, not the active profile. Your spacetime kriging approach could potentially extend their method offshore, creating a true topobathymetric change detection system.
+
+Here are tough questions your committee would likely ask:
+
+One: "How would macro-tidal ranges affect their uncertainty estimates, and what would this mean for applying similar methods to the Texas coast?" You'd need to discuss how tidal range scales with horizontal shoreline uncertainty based on beach slope, and how the 15th percentile might not remove all tidal bias in spring-neap cycles.
+
+Two: "They report 31 percent sandy beaches globally, but can't distinguish sand from gravel. How would this affect interpretation in paraglacial or high-latitude settings?" Think about the geomorphological implications - gravel beaches have different equilibrium profiles and respond differently to forcing.
+
+Three: "If 37 percent of beaches in marine protected areas are eroding versus 24 percent globally, what does this suggest about MPA site selection or management?" Consider whether MPAs might be preferentially located in already-threatened areas, or if protection itself somehow influences sediment dynamics.
+
+Four: "How would you modify their approach to capture non-linear shoreline responses to climate forcing?" You could discuss incorporating change point detection, using basis functions beyond linear trends, or applying state-space models that account for regime shifts.
+
+Five: "Given their 21-meter RMSE, what minimum shoreline change rate can they reliably detect over their 33-year period?" This gets at statistical significance - you'd need to propagate their uncertainty through the linear regression to establish detection limits.
+
+The paper doesn't address this directly, but for your committee prep, it's worth knowing that their method assumes shorelines respond uniformly alongshore at 500-meter spacing. This misses pocket beach dynamics, headland bypassing, and other three-dimensional processes your coastal geomorphology committee members would care about.
+
+That covers the key points for your qual prep. The paper's strength is its global scope and consistent methodology. Its limitations stem from the inherent trade-offs in automated global analysis - simplified assumptions, linear trends, and missing physics that site-specific studies would capture. Understanding both will serve you well in your exam.
